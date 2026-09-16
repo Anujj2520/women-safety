@@ -1,0 +1,6 @@
+{
+  "name": "Women Safety & Emergency Alert System",
+  "description": "Real-time women safety alerting system with one-tap SOS, voice-activated emergency triggers, BLE wearable device integration, and guardian cloud live-tracking dashboard.",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
