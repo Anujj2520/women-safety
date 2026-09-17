@@ -1,9 +1,12 @@
 import { 
+  ActivityCategory,
   AlertIncident, 
   AlertState, 
   AuthorityAgency, 
   EmergencyContact, 
   LocationPoint, 
+  SafetyCheckInEvent,
+  SafetyCheckInSession,
   SafetySettings, 
   TriggerSource, 
   UserProfile 
@@ -16,6 +19,7 @@ const STORAGE_KEYS = {
   CONTACTS: 'aegis_emergency_contacts',
   SETTINGS: 'aegis_safety_settings',
   ACTIVE_INCIDENT: 'aegis_active_incident',
+  CHECKIN_SESSION: 'aegis_safety_checkin',
 };
 
 const DEFAULT_PROFILE: UserProfile = {
@@ -128,6 +132,8 @@ class SafetyStore {
   private countdownTimer: number | null = null;
   private countdownRemaining = 3;
   private audioRecordTimer: number | null = null;
+  private activeCheckIn: SafetyCheckInSession | null = null;
+  private checkInTicker: number | null = null;
 
   private listeners: (() => void)[] = [];
 
@@ -135,6 +141,9 @@ class SafetyStore {
     this.userProfile = this.loadFromStorage(STORAGE_KEYS.USER_PROFILE, DEFAULT_PROFILE);
     this.contacts = this.loadFromStorage(STORAGE_KEYS.CONTACTS, DEFAULT_CONTACTS);
     this.settings = this.loadFromStorage(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
+    this.activeCheckIn = this.loadFromStorage<SafetyCheckInSession | null>(STORAGE_KEYS.CHECKIN_SESSION, null);
+
+    this.startCheckInTicker();
 
     // Listen to location changes to update active incident trail
     locationService.onLocationChange((point) => {
@@ -146,6 +155,9 @@ class SafetyStore {
           this.activeIncident.locationTrail.shift();
         }
         this.notify();
+      }
+      if (this.activeCheckIn && this.activeCheckIn.isActive) {
+        this.activeCheckIn.lastKnownLocation = point;
       }
     });
   }
@@ -206,6 +218,16 @@ class SafetyStore {
 
   getCountdownRemaining(): number {
     return this.countdownRemaining;
+  }
+
+  getActiveCheckIn(): SafetyCheckInSession | null {
+    return this.activeCheckIn;
+  }
+
+  getCheckInRemainingSeconds(): number {
+    if (!this.activeCheckIn || !this.activeCheckIn.isActive) return 0;
+    const diff = Math.max(0, Math.floor((this.activeCheckIn.scheduledCheckInAt - Date.now()) / 1000));
+    return diff;
   }
 
   // Trigger SOS flow
@@ -462,6 +484,230 @@ class SafetyStore {
   deleteContact(id: string) {
     this.contacts = this.contacts.filter(c => c.id !== id);
     this.saveToStorage(STORAGE_KEYS.CONTACTS, this.contacts);
+    this.notify();
+  }
+
+  // Safety Check-in Engine
+  private startCheckInTicker() {
+    if (this.checkInTicker) {
+      clearInterval(this.checkInTicker);
+    }
+    this.checkInTicker = window.setInterval(() => {
+      if (!this.activeCheckIn || !this.activeCheckIn.isActive) return;
+
+      const remainingMs = this.activeCheckIn.scheduledCheckInAt - Date.now();
+      const graceMs = (this.activeCheckIn.gracePeriodSeconds || 60) * 1000;
+
+      // When remaining time <= grace period (e.g. 60s) and status is still 'active'
+      if (remainingMs <= graceMs && remainingMs > 0) {
+        if (this.activeCheckIn.status === 'active') {
+          this.activeCheckIn.status = 'warning_pending';
+          audioService.playCountdownBeep(650);
+          this.activeCheckIn.history.push({
+            id: `evt-${Date.now()}`,
+            timestamp: Date.now(),
+            type: 'warning',
+            message: `Check-in timer expires in ${Math.ceil(remainingMs / 1000)} seconds! Please tap "I'm Safe" to avoid alerting emergency contacts.`,
+            location: locationService.getCurrentLocation(),
+          });
+          this.saveToStorage(STORAGE_KEYS.CHECKIN_SESSION, this.activeCheckIn);
+          this.notify();
+        }
+      }
+
+      // When remaining time <= 0, timer has expired without manual "I'm Safe" confirmation!
+      if (remainingMs <= 0) {
+        if (this.activeCheckIn.status === 'active' || this.activeCheckIn.status === 'warning_pending') {
+          this.handleCheckInExpiry();
+        }
+      }
+    }, 1000);
+  }
+
+  // Handle Missed Check-in Escalation
+  private handleCheckInExpiry() {
+    if (!this.activeCheckIn) return;
+
+    this.activeCheckIn.status = 'expired_alerted';
+    this.activeCheckIn.isActive = false;
+    audioService.playOverdueBuzzer();
+
+    const loc = locationService.getCurrentLocation();
+    this.activeCheckIn.lastKnownLocation = loc;
+
+    // Identify designated emergency contacts / guardians
+    const designatedContacts = this.activeCheckIn.notifyAllGuardians
+      ? this.contacts
+      : this.contacts.filter(c => this.activeCheckIn?.designatedContactIds.includes(c.id));
+
+    const notifiedNames = designatedContacts.map(c => c.name).join(', ') || 'All Primary Contacts';
+
+    // Mark designated contacts as alerted with missed check-in status
+    this.contacts = this.contacts.map(c => {
+      const isDesignated = this.activeCheckIn?.notifyAllGuardians || this.activeCheckIn?.designatedContactIds.includes(c.id);
+      if (isDesignated) {
+        return {
+          ...c,
+          status: 'alerted',
+          lastNotifiedAt: `Missed Check-in Alert: ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+        };
+      }
+      return c;
+    });
+    this.saveToStorage(STORAGE_KEYS.CONTACTS, this.contacts);
+
+    // Record in check-in history
+    this.activeCheckIn.history.push({
+      id: `evt-${Date.now()}`,
+      timestamp: Date.now(),
+      type: 'expired_alerted',
+      message: `🚨 MISSED CHECK-IN ALERT! User failed to confirm "I'm Safe" for "${this.activeCheckIn.activityTitle}". Emergency SMS with live GPS dispatched to: ${notifiedNames}.`,
+      location: loc,
+    });
+    this.saveToStorage(STORAGE_KEYS.CHECKIN_SESSION, this.activeCheckIn);
+
+    // If autoEscalateToSos is enabled, trigger SOS
+    if (this.activeCheckIn.autoEscalateToSos) {
+      this.triggerSOS('safety_checkin_expired', true, false);
+      if (this.activeIncident) {
+        this.activeIncident.timeline.unshift({
+          timestamp: Date.now(),
+          title: '🚨 Missed Safety Check-in Escalation',
+          description: `Scheduled timer for "${this.activeCheckIn.activityTitle}" expired without user confirmation. Designated emergency contacts notified.`,
+          type: 'trigger',
+        });
+      }
+    }
+
+    this.notify();
+  }
+
+  // User manually confirms "I'm Safe"
+  confirmSafe(note?: string) {
+    if (!this.activeCheckIn) return;
+
+    this.activeCheckIn.status = 'safe_confirmed';
+    this.activeCheckIn.isActive = false;
+    this.activeCheckIn.lastCheckedInAt = Date.now();
+    audioService.playSafeChirp();
+
+    const confirmationMsg = note && note.trim()
+      ? `User confirmed: "I'm Safe (${note.trim()})"`
+      : `User manually confirmed: "I'm Safe!" Check-in verified securely.`;
+
+    this.activeCheckIn.history.push({
+      id: `evt-${Date.now()}`,
+      timestamp: Date.now(),
+      type: 'safe_confirmed',
+      message: confirmationMsg,
+      location: locationService.getCurrentLocation(),
+    });
+
+    // If contacts had been alerted by missed check-in, update them to safe
+    this.contacts = this.contacts.map(c => ({
+      ...c,
+      status: 'active',
+      lastNotifiedAt: `Verified Safe: ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+    }));
+    this.saveToStorage(STORAGE_KEYS.CONTACTS, this.contacts);
+
+    this.saveToStorage(STORAGE_KEYS.CHECKIN_SESSION, this.activeCheckIn);
+    this.notify();
+  }
+
+  // Extend active check-in timer
+  extendCheckIn(additionalMinutes: number) {
+    if (!this.activeCheckIn) return;
+
+    const addedMs = additionalMinutes * 60 * 1000;
+    // If was expired, extend from now; otherwise extend from scheduledCheckInAt
+    const baseTime = this.activeCheckIn.scheduledCheckInAt > Date.now() 
+      ? this.activeCheckIn.scheduledCheckInAt 
+      : Date.now();
+
+    this.activeCheckIn.scheduledCheckInAt = baseTime + addedMs;
+    this.activeCheckIn.durationMinutes += additionalMinutes;
+    this.activeCheckIn.status = 'active';
+    this.activeCheckIn.isActive = true;
+
+    audioService.playDiscreetChirp();
+
+    const timeStr = new Date(this.activeCheckIn.scheduledCheckInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    this.activeCheckIn.history.push({
+      id: `evt-${Date.now()}`,
+      timestamp: Date.now(),
+      type: 'extended',
+      message: `Timer extended by +${additionalMinutes} mins. Next check-in due at ${timeStr}.`,
+      location: locationService.getCurrentLocation(),
+    });
+
+    this.saveToStorage(STORAGE_KEYS.CHECKIN_SESSION, this.activeCheckIn);
+    this.notify();
+  }
+
+  // Start new safety check-in session
+  startCheckIn(params: {
+    activityTitle: string;
+    activityCategory: ActivityCategory;
+    durationMinutes: number;
+    routeNote?: string;
+    designatedContactIds?: string[];
+    notifyAllGuardians?: boolean;
+    gracePeriodSeconds?: number;
+    autoEscalateToSos?: boolean;
+  }) {
+    const now = Date.now();
+    const scheduledCheckInAt = now + params.durationMinutes * 60 * 1000;
+    const currentLocation = locationService.getCurrentLocation();
+
+    const newSession: SafetyCheckInSession = {
+      id: `chk-${Date.now().toString(36).toUpperCase()}`,
+      isActive: true,
+      activityTitle: params.activityTitle || 'Safety Check-in',
+      activityCategory: params.activityCategory || 'custom',
+      routeNote: params.routeNote,
+      durationMinutes: params.durationMinutes,
+      startedAt: now,
+      scheduledCheckInAt,
+      status: 'active',
+      designatedContactIds: params.designatedContactIds || this.contacts.map(c => c.id),
+      notifyAllGuardians: params.notifyAllGuardians ?? true,
+      gracePeriodSeconds: params.gracePeriodSeconds || 60,
+      autoEscalateToSos: params.autoEscalateToSos ?? true,
+      lastKnownLocation: currentLocation,
+      history: [
+        {
+          id: `evt-${Date.now()}`,
+          timestamp: now,
+          type: 'started',
+          message: `Safety Check-in initiated for "${params.activityTitle}". Timer set to ${params.durationMinutes} min(s). Due at ${new Date(scheduledCheckInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`,
+          location: currentLocation,
+        }
+      ],
+    };
+
+    this.activeCheckIn = newSession;
+    audioService.playDiscreetChirp();
+    this.saveToStorage(STORAGE_KEYS.CHECKIN_SESSION, this.activeCheckIn);
+    this.startCheckInTicker();
+    this.notify();
+  }
+
+  // Cancel safety check-in
+  cancelCheckIn(reason?: string) {
+    if (!this.activeCheckIn) return;
+
+    this.activeCheckIn.status = 'cancelled';
+    this.activeCheckIn.isActive = false;
+    this.activeCheckIn.history.push({
+      id: `evt-${Date.now()}`,
+      timestamp: Date.now(),
+      type: 'cancelled',
+      message: reason || 'Check-in session ended by user.',
+      location: locationService.getCurrentLocation(),
+    });
+
+    this.saveToStorage(STORAGE_KEYS.CHECKIN_SESSION, this.activeCheckIn);
     this.notify();
   }
 }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   ShieldAlert, 
   MapPin, 
@@ -13,13 +13,15 @@ import {
   Activity, 
   Eye, 
   UserCheck, 
-  ExternalLink,
-  MessageSquareText,
-  BadgeAlert,
-  Play,
-  Pause
+  ExternalLink, 
+  MessageSquareText, 
+  BadgeAlert, 
+  Play, 
+  Pause,
+  Timer
 } from 'lucide-react';
-import { AlertIncident, AlertState, AuthorityAgency, EmergencyContact, LocationPoint, UserProfile } from '../types';
+import { AlertIncident, AlertState, AuthorityAgency, EmergencyContact, LocationPoint, UserProfile, SafetyCheckInSession } from '../types';
+import { safetyStore } from '../services/safetyStore';
 
 interface GuardianDashboardProps {
   userProfile: UserProfile;
@@ -42,10 +44,27 @@ export const GuardianDashboard: React.FC<GuardianDashboardProps> = ({
 }) => {
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [guardianNote, setGuardianNote] = useState('');
+  const [activeCheckIn, setActiveCheckIn] = useState<SafetyCheckInSession | null>(safetyStore.getActiveCheckIn());
+  const [checkInSecs, setCheckInSecs] = useState<number>(safetyStore.getCheckInRemainingSeconds());
   const [guardianNotesList, setGuardianNotesList] = useState<string[]>([
     'Guardian Sunita Sharma: Called Priya’s phone at 10:01 AM. Call forwarded to voicemail.',
     'Guardian Maya Patel: Contacted local station patrol unit #409.',
   ]);
+
+  useEffect(() => {
+    const unsub = safetyStore.subscribe(() => {
+      setActiveCheckIn(safetyStore.getActiveCheckIn());
+      setCheckInSecs(safetyStore.getCheckInRemainingSeconds());
+    });
+    const interval = setInterval(() => {
+      setActiveCheckIn(safetyStore.getActiveCheckIn());
+      setCheckInSecs(safetyStore.getCheckInRemainingSeconds());
+    }, 1000);
+    return () => {
+      unsub();
+      clearInterval(interval);
+    };
+  }, []);
 
   const isEmergency = alertState === 'sos_active' || alertState === 'silent_active';
 
@@ -174,6 +193,89 @@ export const GuardianDashboard: React.FC<GuardianDashboardProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column: Live Ambient Audio & SMS Broadcast Log */}
         <div className="lg:col-span-2 space-y-6">
+          {/* Proactive Safety Check-in Cloud Telemetry for Guardians */}
+          {activeCheckIn && (activeCheckIn.isActive || activeCheckIn.status === 'expired_alerted') ? (
+            <div className={`rounded-2xl border p-5 shadow-lg ${
+              activeCheckIn.status === 'expired_alerted'
+                ? 'border-rose-500 bg-rose-950/40 animate-pulse'
+                : activeCheckIn.status === 'warning_pending'
+                ? 'border-amber-500 bg-amber-950/30'
+                : 'border-emerald-500/40 bg-slate-900/90'
+            }`}>
+              <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-3">
+                  <div className={`p-2.5 rounded-xl ${
+                    activeCheckIn.status === 'expired_alerted'
+                      ? 'bg-rose-600 text-white shadow-md'
+                      : activeCheckIn.status === 'warning_pending'
+                      ? 'bg-amber-500 text-slate-950'
+                      : 'bg-emerald-500/20 text-emerald-400'
+                  }`}>
+                    <Timer className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-bold text-white">
+                        Proactive Safety Check-in: {activeCheckIn.activityTitle}
+                      </h4>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                        activeCheckIn.status === 'expired_alerted'
+                          ? 'bg-rose-500 text-white'
+                          : activeCheckIn.status === 'warning_pending'
+                          ? 'bg-amber-400 text-slate-950'
+                          : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                      }`}>
+                        {activeCheckIn.status === 'expired_alerted' 
+                          ? 'MISSED CHECK-IN: ALERT DISPATCHED' 
+                          : activeCheckIn.status === 'warning_pending'
+                          ? 'CONFIRMATION WARNING' 
+                          : 'TIMER ACTIVE'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Started: {new Date(activeCheckIn.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • Due: <span className="text-white font-semibold">{new Date(activeCheckIn.scheduledCheckInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </p>
+                  </div>
+                </div>
+
+                {activeCheckIn.isActive && (
+                  <div className="text-right">
+                    <span className="font-mono text-2xl font-black text-emerald-400">
+                      {Math.floor(checkInSecs / 60)}:{String(checkInSecs % 60).padStart(2, '0')}
+                    </span>
+                    <span className="block text-[10px] text-slate-400 uppercase">Remaining</span>
+                  </div>
+                )}
+              </div>
+
+              {activeCheckIn.routeNote && (
+                <div className="mt-3 p-2.5 rounded-xl bg-slate-950/90 border border-slate-800 text-xs">
+                  <span className="text-slate-400 font-medium">Trip Notes & Vehicle Details: </span>
+                  <span className="text-white font-mono">{activeCheckIn.routeNote}</span>
+                </div>
+              )}
+
+              {activeCheckIn.status === 'expired_alerted' && (
+                <div className="mt-3 p-3 rounded-xl bg-rose-950/80 border border-rose-800 text-xs text-rose-200">
+                  ⚠️ <span className="font-bold">Automated Guardian Escalation:</span> User did not verify "I'm Safe" before timer expiration. Emergency SMS sent to all designated guardians with live tracking link.
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-slate-800 text-slate-400">
+                  <Timer className="h-4 w-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-semibold text-white">Proactive Safety Check-in</h4>
+                  <p className="text-[11px] text-slate-400">Timer currently idle. Guardians will be alerted automatically if a journey timer expires.</p>
+                </div>
+              </div>
+              <span className="text-[10px] font-mono text-slate-500 uppercase bg-slate-950 px-2 py-1 rounded-md border border-slate-800">Standby</span>
+            </div>
+          )}
+
           {/* Ambient Audio Capture Section */}
           <div className="rounded-2xl border border-slate-800 bg-slate-900/90 p-5 shadow-lg">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">

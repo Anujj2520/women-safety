@@ -24,6 +24,7 @@ import { ProfileSettingsView } from './components/ProfileSettingsView';
 import { AuthModal } from './components/AuthModal';
 import { FakeCallModal } from './components/FakeCallModal';
 import { WalkWithMeModal } from './components/WalkWithMeModal';
+import { SafetyCheckInManager } from './components/SafetyCheckInManager';
 import { 
   Shield, 
   Radio, 
@@ -36,7 +37,8 @@ import {
   Activity, 
   Volume2, 
   VolumeX,
-  Lock
+  Lock,
+  Timer
 } from 'lucide-react';
 import { audioService } from './services/audioService';
 
@@ -158,15 +160,32 @@ export default function App() {
                 </button>
 
                 <button
+                  id="btn-tab-checkin"
+                  onClick={() => setActiveTab('checkin')}
+                  className="rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 text-xs font-semibold text-rose-300 flex items-center gap-1.5 transition-colors"
+                >
+                  <Timer className="h-3.5 w-3.5 text-rose-400" />
+                  <span>Check-in Timer</span>
+                </button>
+
+                <button
                   id="btn-tab-walk-with-me"
                   onClick={() => setIsWalkWithMeOpen(true)}
                   className="rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 text-xs font-semibold text-emerald-300 flex items-center gap-1.5 transition-colors"
                 >
                   <Footprints className="h-3.5 w-3.5 text-emerald-400" />
-                  <span>Safety Journey Timer</span>
+                  <span>Journey Guard</span>
                 </button>
               </div>
             </div>
+
+            {/* Proactive Safety Check-in Widget (Countdown / Quick Safe Trigger) */}
+            <SafetyCheckInManager
+              contacts={contacts}
+              currentLocation={currentLocation}
+              isCompactCard={true}
+              onOpenSosMonitor={() => setActiveTab('checkin')}
+            />
 
             {/* Central SOS Action Trigger Section */}
             <div className="rounded-3xl border border-slate-800 bg-gradient-to-b from-slate-900/90 to-slate-950 p-6 sm:p-8 shadow-2xl">
@@ -209,6 +228,17 @@ export default function App() {
               contacts={contacts}
               authorities={authorities}
               onTriggerRemoteAlarm={() => safetyStore.toggleSiren()}
+            />
+          </div>
+        )}
+
+        {/* TAB: Safety Check-in Manager */}
+        {activeTab === 'checkin' && (
+          <div className="animate-in fade-in duration-200">
+            <SafetyCheckInManager
+              contacts={contacts}
+              currentLocation={currentLocation}
+              onOpenSosMonitor={() => setActiveTab('monitor')}
             />
           </div>
         )}

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Shield, 
   Radio, 
@@ -15,10 +15,14 @@ import {
   LogOut, 
   Volume2, 
   VolumeX,
-  Lock
+  Lock,
+  Timer,
+  Clock,
+  CheckCircle2
 } from 'lucide-react';
 import { AppTab, UserProfile, AlertState, BleDevice } from '../types';
 import { audioService } from '../services/audioService';
+import { safetyStore } from '../services/safetyStore';
 
 interface NavbarProps {
   activeTab: AppTab;
@@ -45,9 +49,36 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenWalkWithMe,
   onTriggerSosQuick,
 }) => {
+  const [activeCheckIn, setActiveCheckIn] = useState(safetyStore.getActiveCheckIn());
+  const [checkInSecs, setCheckInSecs] = useState(safetyStore.getCheckInRemainingSeconds());
+
+  useEffect(() => {
+    const unsub = safetyStore.subscribe(() => {
+      setActiveCheckIn(safetyStore.getActiveCheckIn());
+      setCheckInSecs(safetyStore.getCheckInRemainingSeconds());
+    });
+    const interval = setInterval(() => {
+      setActiveCheckIn(safetyStore.getActiveCheckIn());
+      setCheckInSecs(safetyStore.getCheckInRemainingSeconds());
+    }, 1000);
+    return () => {
+      unsub();
+      clearInterval(interval);
+    };
+  }, []);
+
   const connectedBle = bleDevices.find(d => d.connected);
   const isEmergency = alertState === 'sos_active' || alertState === 'silent_active';
   const isCountdown = alertState === 'countdown';
+  const isCheckInActive = activeCheckIn && activeCheckIn.isActive;
+  const isCheckInWarning = activeCheckIn && activeCheckIn.status === 'warning_pending';
+  const isCheckInExpired = activeCheckIn && activeCheckIn.status === 'expired_alerted';
+
+  const formatCheckInTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-slate-800/80 bg-slate-950/95 backdrop-blur-md">
@@ -153,6 +184,32 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
 
           <button
+            id="nav-tab-checkin"
+            onClick={() => setActiveTab('checkin')}
+            className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all relative ${
+              activeTab === 'checkin'
+                ? 'bg-rose-500 text-white shadow-md shadow-rose-500/20'
+                : isCheckInActive
+                ? isCheckInWarning
+                  ? 'bg-amber-500/20 border border-amber-500/40 text-amber-300 animate-pulse'
+                  : 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+            }`}
+          >
+            <Timer className="h-3.5 w-3.5" />
+            <div className="flex items-center gap-1.5">
+              <span>Check-in</span>
+              {isCheckInActive && (
+                <span className={`font-mono text-[10px] font-black px-1.5 py-0.2 rounded ${
+                  isCheckInWarning ? 'bg-amber-500 text-slate-950 animate-ping' : 'bg-emerald-500/30 text-emerald-300'
+                }`}>
+                  {formatCheckInTime(checkInSecs)}
+                </span>
+              )}
+            </div>
+          </button>
+
+          <button
             id="nav-tab-wearables"
             onClick={() => setActiveTab('wearables')}
             className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
@@ -199,6 +256,49 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Quick action tools & Auth */}
         <div className="flex items-center gap-2">
+          {/* Active Check-in Header Pill & Quick Safe Action */}
+          {isCheckInActive && (
+            <div className="flex items-center gap-1.5">
+              <button
+                id="btn-header-checkin-live"
+                onClick={() => setActiveTab('checkin')}
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold transition-all border ${
+                  isCheckInWarning
+                    ? 'border-amber-500 bg-amber-950/80 text-amber-300 animate-pulse'
+                    : 'border-emerald-500/50 bg-emerald-950/60 text-emerald-300'
+                }`}
+                title="View Active Safety Check-in"
+              >
+                <Clock className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Check-in:</span>
+                <span className="font-mono">{formatCheckInTime(checkInSecs)}</span>
+              </button>
+
+              <button
+                id="btn-header-im-safe"
+                onClick={() => safetyStore.confirmSafe()}
+                className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-1.5 text-xs font-bold flex items-center gap-1 shadow-sm transition-colors cursor-pointer"
+                title="Confirm You Are Safe"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                <span className="hidden md:inline">I'm Safe</span>
+              </button>
+            </div>
+          )}
+
+          {/* Quick Check-in launcher if not active */}
+          {!isCheckInActive && (
+            <button
+              id="btn-quick-check-in"
+              onClick={() => setActiveTab('checkin')}
+              title="Set Safety Check-in Timer"
+              className="hidden sm:flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/80 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:border-slate-700 hover:text-white transition-colors"
+            >
+              <Timer className="h-3.5 w-3.5 text-rose-400" />
+              <span className="hidden md:inline">Check-in</span>
+            </button>
+          )}
+
           {/* Quick Fake Call tool */}
           <button
             id="btn-quick-fake-call"
@@ -297,6 +397,26 @@ export const Navbar: React.FC<NavbarProps> = ({
         >
           <MapPin className="h-4 w-4" />
           <span>Guardian</span>
+        </button>
+
+        <button
+          id="mobile-nav-tab-checkin"
+          onClick={() => setActiveTab('checkin')}
+          className={`flex flex-col items-center gap-1 px-2 py-1 text-[10px] font-medium relative ${
+            activeTab === 'checkin' 
+              ? 'text-rose-400' 
+              : isCheckInActive
+              ? 'text-emerald-400 font-bold'
+              : 'text-slate-400'
+          }`}
+        >
+          <div className="relative">
+            <Timer className="h-4 w-4" />
+            {isCheckInActive && (
+              <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
+            )}
+          </div>
+          <span>Check-in</span>
         </button>
 
         <button

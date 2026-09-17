@@ -1,4 +1,4 @@
-export type AppTab = 'monitor' | 'guardian' | 'wearables' | 'contacts' | 'settings';
+export type AppTab = 'monitor' | 'guardian' | 'checkin' | 'wearables' | 'contacts' | 'settings';
 
 export type AlertState = 'normal' | 'countdown' | 'sos_active' | 'silent_active' | 'resolved';
 
@@ -7,6 +7,7 @@ export type TriggerSource =
   | 'voice_trigger' 
   | 'wearable_ble' 
   | 'walk_timer_expired' 
+  | 'safety_checkin_expired'
   | 'duress_pin'
   | 'manual_silent';
 
@@ -125,3 +126,33 @@ export interface SafetySettings {
   fakeCallDelaySeconds: number;
   bleAutoReconnect: boolean;
 }
+
+export interface SafetyCheckInEvent {
+  id: string;
+  timestamp: number;
+  type: 'started' | 'safe_confirmed' | 'extended' | 'warning' | 'expired_alerted' | 'cancelled';
+  message: string;
+  location?: LocationPoint;
+}
+
+export type ActivityCategory = 'rideshare' | 'walking' | 'date_meeting' | 'study_work' | 'transit' | 'custom';
+
+export interface SafetyCheckInSession {
+  id: string;
+  isActive: boolean;
+  activityTitle: string;
+  activityCategory: ActivityCategory;
+  routeNote?: string;
+  durationMinutes: number;
+  startedAt: number;
+  scheduledCheckInAt: number;
+  lastCheckedInAt?: number;
+  status: 'active' | 'warning_pending' | 'safe_confirmed' | 'expired_alerted' | 'cancelled';
+  designatedContactIds: string[];
+  notifyAllGuardians: boolean;
+  gracePeriodSeconds: number;
+  autoEscalateToSos: boolean;
+  history: SafetyCheckInEvent[];
+  lastKnownLocation?: LocationPoint;
+}
+
